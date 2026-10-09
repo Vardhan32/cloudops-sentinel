@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CloudOps Sentinel — Operations Dashboard</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◈</span>
+    <div>
+      <h1>CloudOps Sentinel</h1>
+      <p>Local-first infrastructure monitoring &amp; incident troubleshooting</p>
+    </div>
+  </div>
+  <div id="healthBadge" class="badge loading">Loading…</div>
+</header>
+
+<main class="grid">
+  <section class="card">
+    <h2>System health</h2>
+    <div id="summaryState" class="state">Loading summary…</div>
+    <div class="metrics">
+      <div class="metric"><span class="label">CPU</span><div class="bar"><div id="cpuBar" class="fill"></div></div><span id="cpuVal" class="value">–</span></div>
+      <div class="metric"><span class="label">Memory</span><div class="bar"><div id="memBar" class="fill"></div></div><span id="memVal" class="value">–</span></div>
+      <div class="metric"><span class="label">Disk</span><div class="bar"><div id="diskBar" class="fill"></div></div><span id="diskVal" class="value">–</span></div>
+      <p class="meta">Uptime: <span id="uptimeVal">–</span> · Source: <span id="sourceVal">–</span> · Updated <span id="updatedVal">–</span></p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Recent metrics</h2>
+    <canvas id="spark" width="520" height="120" aria-label="Recent CPU trend"></canvas>
+    <div id="historyState" class="state">Loading history…</div>
+    <table id="historyTable" class="table hidden">
+      <thead><tr><th>Time</th><th>CPU %</th><th>Mem %</th><th>Disk %</th><th>Source</th></tr></thead>
+      <tbody id="historyBody"></tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Active incidents <span id="incidentCount" class="pill">0</span></h2>
+    <div class="row">
+      <label>Filter
+        <select id="incidentFilter">
+          <option value="">All</option>
+          <option value="open">Open</option>
+          <option value="acknowledged">Acknowledged</option>
+          <option value="resolved">Resolved</option>
+        </select>
+      </label>
+      <button id="refreshIncidents">Refresh</button>
+    </div>
+    <div id="incidentState" class="state">Loading incidents…</div>
+    <ul id="incidentList" class="incidents"></ul>
+  </section>
+
+  <section class="card">
+    <h2>Service health</h2>
+    <div id="serviceState" class="state">Loading services…</div>
+    <ul id="serviceList" class="services"></ul>
+    <form id="addService" class="row">
+      <input id="svcName" type="text" placeholder="Service name" maxlength="128" required />
+      <input id="svcUrl" type="url" placeholder="http://127.0.0.1:8000/api/test/ok" maxlength="1024" required />
+      <button type="submit">Add</button>
+    </form>
+    <p class="hint">Only http/https URLs are accepted. Checks run solely against configured targets.</p>
+  </section>
+
+  <section class="card">
+    <h2>Demo scenarios <span class="pill ghost">simulated</span></h2>
+    <p class="hint">Deterministic fixtures. They create <em>simulated</em> data only and never stress your machine.</p>
+    <div class="btnrow">
+      <button data-sim="cpu_warning">CPU warning</button>
+      <button data-sim="cpu_critical">CPU critical</button>
+      <button data-sim="memory_critical">Memory critical</button>
+      <button data-sim="disk_critical">Disk critical</button>
+      <button data-sim="service_failure">Service failure</button>
+      <button data-sim="clear" class="ok">Clear / recover</button>
+    </div>
+    <div id="simState" class="state"></div>
+  </section>
+
+  <section class="card">
+    <h2>Troubleshooting runbook</h2>
+    <ol class="runbook">
+      <li>Check the health badge: <strong>critical</strong> means act now, <strong>degraded</strong> means investigate soon.</li>
+      <li>Open the incident, note observed value vs threshold and first-seen time.</li>
+      <li><strong>Acknowledge</strong> to claim ownership while diagnosing.</li>
+      <li>For service incidents, use “Check now” and compare status code / response time history.</li>
+      <li><strong>Resolve</strong> after recovery; the monitor auto-resolves cleared metric conditions.</li>
+    </ol>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>CloudOps Sentinel · local-first demo, not a production cloud monitor · <a href="/docs">API docs</a></span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
