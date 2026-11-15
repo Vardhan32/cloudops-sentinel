@@ -18,7 +18,9 @@ class MetricSnapshot(Base):
     __tablename__ = "metric_snapshots"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
     cpu_percent: Mapped[float] = mapped_column(Float)
     memory_percent: Mapped[float] = mapped_column(Float)
     disk_percent: Mapped[float] = mapped_column(Float)
@@ -44,8 +46,12 @@ class Incident(Base):
     source: Mapped[str] = mapped_column(String(16), default="observed")
     # open | acknowledged | resolved
     status: Mapped[str] = mapped_column(String(16), default="open")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
     acknowledged_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -61,7 +67,9 @@ class ServiceTarget(Base):
     name: Mapped[str] = mapped_column(String(128), unique=True)
     url: Mapped[str] = mapped_column(String(1024))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
 
 
 class ServiceCheckResult(Base):
@@ -69,7 +77,9 @@ class ServiceCheckResult(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     service_id: Mapped[int] = mapped_column(ForeignKey("service_targets.id"))
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     healthy: Mapped[bool] = mapped_column(Boolean, default=False)

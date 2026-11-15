@@ -1,9 +1,19 @@
 /* CloudOps Sentinel dashboard: plain JS, no dependencies. */
 const $ = (id) => document.getElementById(id);
 const REFRESH_MS = 5000;
+let pollInFlight = false; // overlap guard for the auto-refresh loop
+let toastTimer = null;
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 3500);
+}
 
 function fmtTime(ts) {
-  try { return new Date(ts).toLocaleTimeString(); } catch { return "–"; }
+  try { return new Date(ts).toLocaleString(); } catch { return "–"; }
 }
 
 function setBar(barId, valId, pct, warn, crit) {
@@ -95,8 +105,9 @@ async function loadIncidents() {
     }
     state.className = "state hidden";
     list.innerHTML = rows.map((i) =>
-      `<li><div><span class="sev ${i.severity}">${i.severity}</span>` +
+      `<li class="${i.status === "resolved" ? "resolved" : ""}"><div><span class="sev ${i.severity}">${i.severity}</span>` +
       `<span class="title">${escapeHtml(i.title)}</span>` +
+      `<span class="st ${i.status}">${i.status}</span>` +
       (i.source === "simulated" ? `<span class="src">simulated</span>` : "") + "</div>" +
       `<div class="desc">${escapeHtml(i.description || "")}</div>` +
       `<div class="status">#${i.id} · ${i.type} · ${i.status}` +
@@ -118,8 +129,10 @@ async function loadIncidents() {
 
 async function mutateIncident(id, action, btn) {
   btn.disabled = true;
-  try { await api(`/api/incidents/${id}/${action}`, { method: "POST" }); }
-  catch (e) { alert("Failed: " + e.message); }
+  try {
+    await api(`/api/incidents/${id}/${action}`, { method: "POST" });
+    toast(`Incident #${id} ${action === "resolve" ? "resolved" : "acknowledged"}.`);
+  } catch (e) { toast("Failed: " + e.message, true); }
   finally { await loadIncidents(); await loadSummary(); }
 }
 
@@ -147,14 +160,20 @@ async function loadServices() {
     list.querySelectorAll("[data-check]").forEach((b) =>
       b.addEventListener("click", async () => {
         b.disabled = true;
-        try { await api(`/api/services/${b.dataset.check}/check`, { method: "POST" }); }
-        catch (e) { alert("Check failed: " + e.message); }
+        try {
+          await api(`/api/services/${b.dataset.check}/check`, { method: "POST" });
+          toast("Check completed.");
+        }
+        catch (e) { toast("Check failed: " + e.message, true); }
         finally { await loadServices(); await loadIncidents(); await loadSummary(); }
       }));
     list.querySelectorAll("[data-del]").forEach((b) =>
       b.addEventListener("click", async () => {
         if (!confirm("Remove this service target?")) return;
-        await api(`/api/services/${b.dataset.del}`, { method: "DELETE" });
+        try {
+          await api(`/api/services/${b.dataset.del}`, { method: "DELETE" });
+          toast("Service removed.");
+        } catch (e) { toast("Remove failed: " + e.message, true); }
         await loadServices();
       }));
   } catch (e) {
@@ -173,9 +192,21 @@ $("addService").addEventListener("submit", async (e) => {
     await api("/api/services", { method: "POST",
       body: JSON.stringify({ name: $("svcName").value, url: $("svcUrl").value }) });
     $("svcName").value = ""; $("svcUrl").value = "";
+    toast("Service added.");
     await loadServices();
-  } catch (err) { alert("Could not add service: " + err.message); }
+  } catch (err) { toast("Could not add service: " + err.message, true); }
 });
+
+async function quickAddFixture(name, path) {
+  try {
+    await api("/api/services", { method: "POST",
+      body: JSON.stringify({ name, url: window.location.origin + path }) });
+    toast(`Fixture '${name}' added.`);
+    await loadServices();
+  } catch (err) { toast("Could not add fixture: " + err.message, true); }
+}
+$("addOkFixture").addEventListener("click", () => quickAddFixture("local-test-ok", "/api/test/ok"));
+$("addFailFixture").addEventListener("click", () => quickAddFixture("local-test-fail", "/api/test/fail"));
 
 $("refreshIncidents").addEventListener("click", loadIncidents);
 $("incidentFilter").addEventListener("change", loadIncidents);
@@ -193,4 +224,8 @@ document.querySelectorAll("[data-sim]").forEach((b) =>
 
 async function refreshAll() { await loadSummary(); await loadHistory(); await loadIncidents(); await loadServices(); }
 refreshAll();
-setInterval(async () => { await loadSummary(); await loadHistory(); }, REFRESH_MS);
+setInterval(async () => {
+  if (pollInFlight) return; // skip a tick rather than stacking requests
+  pollInFlight = true;
+  try { await loadSummary(); await loadHistory(); } finally { pollInFlight = false; }
+}, REFRESH_MS);

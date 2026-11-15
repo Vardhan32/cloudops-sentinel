@@ -43,8 +43,21 @@ SERVICE_CHECK_TIMEOUT_SECONDS = _float_env("SENTINEL_SERVICE_TIMEOUT", 5.0)
 # SQLite database location. Overridden in tests via DATABASE_URL.
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/sentinel.db")
 
-# Default service targets checked by the monitor. Localhost-only defaults
-# so the app works fully offline. Users may add more via the API.
-DEFAULT_SERVICES: list[dict[str, str]] = [
-    {"name": "local-test-ok", "url": "http://127.0.0.1:8000/api/test/ok"},
-]
+
+def validate_config() -> None:
+    """Fail fast on nonsensical configuration. Raises ValueError."""
+    pairs = [
+        ("CPU", CPU_WARN, CPU_CRIT),
+        ("MEM", MEM_WARN, MEM_CRIT),
+        ("DISK", DISK_WARN, DISK_CRIT),
+    ]
+    for label, warn, crit in pairs:
+        if not (0 < warn < crit <= 100):
+            raise ValueError(
+                f"Invalid {label} thresholds: require 0 < warn < crit <= 100 "
+                f"(got warn={warn}, crit={crit})."
+            )
+    if MONITOR_INTERVAL_SECONDS < 5:
+        raise ValueError("SENTINEL_MONITOR_INTERVAL must be >= 5 seconds.")
+    if SERVICE_CHECK_TIMEOUT_SECONDS <= 0:
+        raise ValueError("SENTINEL_SERVICE_TIMEOUT must be > 0.")
