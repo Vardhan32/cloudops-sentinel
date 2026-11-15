@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -94,7 +93,8 @@ def run_monitor_cycle() -> None:
         logger.error("Monitor cycle failed: %s", exc)
         db.rollback()
         logger.exception(
-            "Background monitoring cycle failed; remaining checks in this cycle were skipped."
+            "Background monitoring cycle failed; "
+            "remaining checks in this cycle were skipped."
         )
     finally:
         db.close()
