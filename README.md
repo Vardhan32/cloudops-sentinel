@@ -59,7 +59,7 @@ flowchart TB
 Prerequisites: Python 3.12+ and Git.
 
 ```powershell
-git clone https://github.com/<your-username>/cloudops-sentinel.git
+git clone https://github.com/Vardhan32/cloudops-sentinel.git
 cd cloudops-sentinel
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -71,7 +71,7 @@ If script execution is blocked, use `Set-ExecutionPolicy -Scope CurrentUser Remo
 ## Installation (Linux / macOS)
 
 ```bash
-git clone https://github.com/<your-username>/cloudops-sentinel.git
+git clone https://github.com/Vardhan32/cloudops-sentinel.git
 cd cloudops-sentinel
 python3 -m venv .venv
 source .venv/bin/activate
