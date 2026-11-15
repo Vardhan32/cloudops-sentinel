@@ -11,32 +11,56 @@ Design rules:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from . import config
 from .models import Incident
+from .utils import get_logger, utcnow
+
+logger = get_logger("monitor")
 
 ACTIVE_STATUSES = ("open", "acknowledged")
 
 SEVERITY_RANK = {"warning": 1, "critical": 2}
 
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+def evaluate_thresholds(cpu: float, memory: float, disk: float) -> list[dict[str, Any]]:
+    """Return a finding per breached threshold (empty when healthy).
 
-
-def evaluate_thresholds(
-    cpu: float, memory: float, disk: float
-) -> list[dict[str, Any]]:
-    """Return a finding per breached threshold (empty when healthy)."""
+    Boundary rule: a value exactly equal to a threshold counts as breached
+    (>=), so warn <= value < crit is a warning and value >= crit is critical.
+    """
     findings: list[dict[str, Any]] = []
     checks = [
-        ("cpu_high", "cpu", "High CPU utilization", cpu, config.CPU_WARN, config.CPU_CRIT, "%"),
-        ("memory_high", "memory", "High memory utilization", memory, config.MEM_WARN, config.MEM_CRIT, "%"),
-        ("disk_low", "disk", "Low disk space", disk, config.DISK_WARN, config.DISK_CRIT, "% used"),
+        (
+            "cpu_high",
+            "cpu",
+            "High CPU utilization",
+            cpu,
+            config.CPU_WARN,
+            config.CPU_CRIT,
+            "%",
+        ),
+        (
+            "memory_high",
+            "memory",
+            "High memory utilization",
+            memory,
+            config.MEM_WARN,
+            config.MEM_CRIT,
+            "%",
+        ),
+        (
+            "disk_low",
+            "disk",
+            "Low disk space",
+            disk,
+            config.DISK_WARN,
+            config.DISK_CRIT,
+            "% used",
+        ),
     ]
     for itype, dedup, title, value, warn, crit, unit in checks:
         severity = None
@@ -73,6 +97,8 @@ def sync_incidents(
     - Ongoing condition -> update value/severity/timestamp, no duplicate.
     - Cleared condition -> resolve the active incident (recovery).
     Returns all currently-relevant incidents (created + updated).
+    Only incidents with the same source are touched, so simulated and
+    observed incidents never interfere with each other.
     """
     touched: list[Incident] = []
     active = (
@@ -109,10 +135,13 @@ def sync_incidents(
             ):
                 existing.severity = finding["severity"]
                 existing.title = finding["title"]
+                logger.info(
+                    "Incident #%s escalated to %s", existing.id, finding["severity"]
+                )
             existing.observed_value = finding.get("observed_value")
             existing.threshold = finding.get("threshold")
             existing.description = finding["description"]
-            existing.updated_at = _utcnow()
+            existing.updated_at = utcnow()
             touched.append(existing)
 
     # Recovery: active incidents whose condition no longer holds.
@@ -123,12 +152,12 @@ def sync_incidents(
             "disk_low",
         ):
             incident.status = "resolved"
-            incident.resolved_at = _utcnow()
-            incident.updated_at = _utcnow()
+            incident.resolved_at = utcnow()
+            incident.updated_at = utcnow()
             incident.description = (
-                incident.description
-                + " Condition cleared; system recovered."
+                incident.description + " Condition cleared; system recovered."
             )
+            logger.info("Incident #%s auto-resolved (recovery)", incident.id)
 
     db.commit()
     for incident in touched:
@@ -155,7 +184,7 @@ def record_service_incident(
         .order_by(Incident.id.desc())
         .first()
     )
-    now = _utcnow()
+    now = utcnow()
     if existing is None:
         incident = Incident(
             type="service_down",
@@ -168,6 +197,7 @@ def record_service_incident(
         db.add(incident)
         db.commit()
         db.refresh(incident)
+        logger.info("New service incident for '%s'", service_name)
         return incident
     existing.severity = "critical"
     existing.description = f"Health check failed for '{service_name}': {error}"
@@ -194,35 +224,36 @@ def resolve_service_incident(
     )
     if existing is None:
         return None
-    now = _utcnow()
+    now = utcnow()
     existing.status = "resolved"
     existing.resolved_at = now
     existing.updated_at = now
     existing.description += " Service recovered; health check passing."
     db.commit()
     db.refresh(existing)
+    logger.info("Service incident for '%s' resolved (recovery)", service_name)
     return existing
 
 
-def acknowledge_incident(db: Session, incident_id: int) -> Incident | None:
-    incident = db.get(Incident, incident_id)
-    if incident is None or incident.status != "open":
+def acknowledge_incident(db: Session, incident: Incident) -> Incident | None:
+    """Acknowledge an open incident object. Returns None if not open."""
+    if incident.status != "open":
         return None
     incident.status = "acknowledged"
-    incident.acknowledged_at = _utcnow()
-    incident.updated_at = _utcnow()
+    incident.acknowledged_at = utcnow()
+    incident.updated_at = utcnow()
     db.commit()
     db.refresh(incident)
     return incident
 
 
-def resolve_incident(db: Session, incident_id: int) -> Incident | None:
-    incident = db.get(Incident, incident_id)
-    if incident is None or incident.status == "resolved":
+def resolve_incident(db: Session, incident: Incident) -> Incident | None:
+    """Resolve an acknowledged/open incident object. None if already resolved."""
+    if incident.status == "resolved":
         return None
     incident.status = "resolved"
-    incident.resolved_at = _utcnow()
-    incident.updated_at = _utcnow()
+    incident.resolved_at = utcnow()
+    incident.updated_at = utcnow()
     db.commit()
     db.refresh(incident)
     return incident

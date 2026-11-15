@@ -28,8 +28,12 @@ def test_incident_creation_and_dedup(db):
 
 
 def test_severity_escalation(db):
-    created = monitor.sync_incidents(db, [_finding(severity="warning")], source="observed")
-    updated = monitor.sync_incidents(db, [_finding(severity="critical")], source="observed")
+    created = monitor.sync_incidents(
+        db, [_finding(severity="warning")], source="observed"
+    )
+    updated = monitor.sync_incidents(
+        db, [_finding(severity="critical")], source="observed"
+    )
     assert updated[0].id == created[0].id
     assert updated[0].severity == "critical"
 

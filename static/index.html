@@ -66,7 +66,12 @@
       <input id="svcUrl" type="url" placeholder="http://127.0.0.1:8000/api/test/ok" maxlength="1024" required />
       <button type="submit">Add</button>
     </form>
-    <p class="hint">Only http/https URLs are accepted. Checks run solely against configured targets.</p>
+    <div class="row">
+      <span class="hint">Quick-add offline fixtures:</span>
+      <button id="addOkFixture" type="button">+ healthy fixture</button>
+      <button id="addFailFixture" type="button">+ failing fixture</button>
+    </div>
+    <p class="hint">Only http:// and https:// URLs to public or loopback destinations are accepted. Every check re-validates its destination; redirects to blocked destinations abort the check.</p>
   </section>
 
   <section class="card">
@@ -98,6 +103,7 @@
 <footer class="footer">
   <span>CloudOps Sentinel · local-first demo, not a production cloud monitor · <a href="/docs">API docs</a></span>
 </footer>
+<div id="toast" class="toast hidden" role="status"></div>
 
 <script src="/static/app.js"></script>
 </body>

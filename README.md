@@ -1,62 +1,77 @@
 # CloudOps Sentinel
 
-A **local-first infrastructure monitoring, health-check, and incident troubleshooting platform**. It watches your computer's CPU, memory, and disk, checks HTTP services, raises incidents when thresholds break, and tracks each incident until recovery — all on your own machine, with no cloud account, paid API, or external service required.
+Local-first infrastructure monitoring, health-check, and incident troubleshooting — built with FastAPI, SQLite, and `psutil`. It watches your computer's CPU, memory, and disk, checks HTTP services, raises incidents when thresholds break, and tracks each incident until recovery. No cloud account, paid API, or external service required.
 
-> **Honest scope:** this is a local-first learning/portfolio tool, not a production cloud monitoring platform. CPU/RAM/disk readings are real local observations (via `psutil`); warning/critical demo scenarios are explicitly labelled `simulated` and never stress your machine.
+**Repository:** https://github.com/Vardhan32/cloudops-sentinel
 
-## Problem statement
+> **Honest scope:** a local-first learning/portfolio tool, not a production cloud monitor. CPU/RAM/disk readings are real local observations; demo scenarios are explicitly labelled `simulated` and never stress your machine. See [Security](docs/SECURITY.md) for hardening and known limitations.
 
-Junior support/operations engineers need to answer three questions fast: *is something wrong, what is the evidence, and who is handling it?* CloudOps Sentinel gives a single dashboard for live system health, metric history, service checks, and an incident queue with acknowledge/resolve workflow.
+## Why this exists
+
+Support and operations engineers answer three questions fast: *is something wrong, what is the evidence, and who owns it?* This project puts live health, metric history, service checks, and an acknowledge/resolve incident queue behind one dashboard and a documented REST API.
 
 ## Features
 
-- **Live system metrics** — real CPU, memory, disk, uptime via `psutil`
-- **Metric history** — SQLite-backed snapshots with trend chart
-- **Health summary** — `healthy` / `degraded` / `critical` from active incidents
-- **Incident engine** — configurable warning/critical thresholds, one active incident per condition (dedup), auto-recovery when conditions clear
-- **HTTP service checks** — timeout-protected checks against explicitly configured targets only, with SSRF validation (http/https, no embedded credentials, no dangerous schemes)
-- **Controlled fixtures** — `/api/test/ok` and `/api/test/fail` so failures are demonstrable offline
-- **Demo scenarios** — deterministic `simulated` incidents (CPU warning/critical, memory, disk, service failure, recovery) without harming the host
-- **Operations dashboard** — responsive plain HTML/CSS/JS with loading, empty, and error states
-- **Tests, Docker, CI** — pytest suite, Dockerfile + Compose, GitHub Actions workflow
-
-## Technology stack
-
-| Layer | Choice |
-|---|---|
-| Language | Python 3.12+ |
-| API | FastAPI, Pydantic v2 |
-| ORM / DB | SQLAlchemy 2.x, SQLite |
-| Metrics | psutil |
-| HTTP checks | httpx (timeout-guarded) |
-| Frontend | Plain HTML, CSS, JavaScript (no framework) |
-| Tests | pytest + FastAPI TestClient |
-| Containers / CI | Docker, Docker Compose, GitHub Actions |
+- **Live metrics** — real CPU / memory / disk / uptime via `psutil`, stored as SQLite snapshots
+- **Health summary** — `healthy` / `degraded` / `critical` derived from active incidents
+- **Incident engine** — warning/critical thresholds, one active incident per condition (dedup + escalation), auto-recovery, ack/resolve workflow with timestamps
+- **Guarded HTTP service checks** — per-request DNS resolution + policy check, redirect re-validation (max 3 hops), short timeouts, 256 KiB body cap, connection-pool limits
+- **Offline fixtures** — `/api/test/ok`, `/api/test/fail`, plus one-click dashboard quick-add
+- **Labelled demos** — deterministic `simulated` scenarios, fully separated from `observed` data
+- **Dashboard** — dependency-free HTML/CSS/JS with loading, empty, and error states, toast feedback, mobile-usable layout
+- **Quality gates** — 94-test pytest suite, Docker + Compose, GitHub Actions (tests + image build)
 
 ## Architecture
 
 ```mermaid
 flowchart TB
     subgraph Browser["Dashboard (static HTML/CSS/JS)"]
-        UI["index.html + app.js<br/>polls API every 5s"]
+        UI["app.js polls API every 5s<br/>(overlap-guarded)"]
     end
     subgraph App["FastAPI (app/main.py)"]
         Routes["REST routes<br/>health · metrics · incidents · services · simulate"]
         Loop["Background monitor loop<br/>every SENTINEL_MONITOR_INTERVAL"]
         Engine["Incident engine<br/>evaluate + dedup + recover"]
-        Checks["HTTP checker<br/>allowlisted targets only"]
+        Guard["Guarded HTTP checker<br/>resolve + policy-check every hop"]
         Collector["psutil collector<br/>real local readings"]
     end
-    DB[("SQLite<br/>snapshots · incidents · checks")]
+    DB[("SQLite<br/>snapshots · incidents<br/>targets · check results")]
     UI <--> Routes
     Loop --> Collector --> Engine --> DB
-    Loop --> Checks --> Engine
+    Loop --> Guard --> Engine
     Routes <--> DB
 ```
 
-## Installation (Windows PowerShell)
+Detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROJECT_AUDIT.md](docs/PROJECT_AUDIT.md)
 
-Prerequisites: Python 3.12+ and Git.
+## Tech stack
+
+Python 3.12+ · FastAPI · Pydantic v2 · SQLAlchemy 2.x · SQLite · psutil · httpx · pytest · plain HTML/CSS/JS · Docker / Compose · GitHub Actions. Pinned versions in `requirements.txt`.
+
+## Repository structure
+
+```
+cloudops-sentinel/
+├── app/
+│   ├── main.py        # routes, lifespan, background monitor loop
+│   ├── config.py      # thresholds + startup validation
+│   ├── database.py    # engine, sessions, table creation
+│   ├── models.py      # MetricSnapshot, Incident, ServiceTarget, ServiceCheckResult
+│   ├── schemas.py     # Pydantic request/response models
+│   ├── metrics.py     # psutil collector (real readings only)
+│   ├── monitor.py     # threshold evaluation + incident lifecycle
+│   ├── services.py    # guarded HTTP checker + SSRF policy
+│   └── utils.py       # UTC clock + logging
+├── static/            # dashboard (index.html, styles.css, app.js)
+├── tests/             # pytest suite (mocked psutil/network/DNS)
+├── docs/              # audit, architecture, security notes
+├── Dockerfile · docker-compose.yml · .dockerignore
+└── .github/workflows/ci.yml
+```
+
+## Setup (Windows PowerShell)
+
+Requires Python 3.12+ and Git.
 
 ```powershell
 git clone https://github.com/Vardhan32/cloudops-sentinel.git
@@ -64,125 +79,115 @@ cd cloudops-sentinel
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-```
-
-If script execution is blocked, use `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` (current user only), or run `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` without activating.
-
-## Installation (Linux / macOS)
-
-```bash
-git clone https://github.com/Vardhan32/cloudops-sentinel.git
-cd cloudops-sentinel
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Run locally
-
-```powershell
-.\.venv\Scripts\Activate.ps1
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Then open **http://127.0.0.1:8000** (dashboard) and **http://127.0.0.1:8000/docs** (OpenAPI docs).
+Open **http://127.0.0.1:8000** (dashboard) · **http://127.0.0.1:8000/docs** (OpenAPI).
 
-Useful environment variables:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `SENTINEL_CPU_WARN` / `SENTINEL_CPU_CRIT` | 75 / 90 | CPU thresholds (%) |
-| `SENTINEL_MEM_WARN` / `SENTINEL_MEM_CRIT` | 80 / 90 | Memory thresholds (%) |
-| `SENTINEL_DISK_WARN` / `SENTINEL_DISK_CRIT` | 80 / 90 | Disk-used thresholds (%) |
-| `SENTINEL_MONITOR_INTERVAL` | 30 | Background check interval (s) |
-| `SENTINEL_SERVICE_TIMEOUT` | 5 | HTTP check timeout (s) |
-| `SENTINEL_ENABLE_MONITOR` | 1 | Set to `0` to disable background loop |
-| `DATABASE_URL` | `sqlite:///./data/sentinel.db` | Database location |
-
-## Run tests
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-pytest -q
-```
-
-Tests are deterministic: `psutil` readings and HTTP calls are mocked, there is no dependency on GCP, the internet, or heavy resource usage.
+Linux/macOS: same steps with `python3 -m venv .venv` and `source .venv/bin/activate`.
 
 ## Docker
 
 ```bash
-docker build -t cloudops-sentinel .
-docker run -p 127.0.0.1:8000:8000 -v sentinel-data:/app/data cloudops-sentinel
-# or
 docker compose up --build
+# or: docker build -t cloudops-sentinel . && docker run -p 127.0.0.1:8000:8000 -v sentinel-data:/app/data cloudops-sentinel
 ```
 
-The SQLite database persists in the `sentinel-data` volume (`/app/data`). A container health check polls `/api/health`.
+The image runs as a non-root user, binds `0.0.0.0` in-container, persists SQLite in the `sentinel-data` volume, and health-checks `/api/health`. Host exposure stays localhost-only via the Compose port mapping.
 
-## API documentation
+## Configuration
 
-Interactive docs: `/docs` (Swagger) and `/redoc`. Key routes:
-
-| Method | Route | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| GET | `/api/health` | App + DB health, uptime |
-| GET | `/api/metrics/current` | Live reading (also stored) |
-| GET | `/api/metrics/history?limit=60` | Recent snapshots |
-| GET | `/api/metrics/summary` | Overall status + active counts |
-| GET | `/api/incidents?status=&severity=` | List / filter incidents |
-| GET | `/api/incidents/{id}` | Incident detail |
-| POST | `/api/incidents/{id}/acknowledge` | Claim an open incident |
-| POST | `/api/incidents/{id}/resolve` | Close an incident |
-| GET/POST/DELETE | `/api/services…` | Targets, `/{id}/check`, `/history` |
-| GET | `/api/test/ok`, `/api/test/fail` | Controlled offline fixtures |
-| POST | `/api/simulate` | Demo scenarios (`cpu_warning`, `cpu_critical`, `memory_critical`, `disk_critical`, `service_failure`, `clear`) |
+| `SENTINEL_CPU_WARN` / `SENTINEL_CPU_CRIT` | 75 / 90 | CPU thresholds (%) — must satisfy 0 < warn < crit ≤ 100, validated at startup |
+| `SENTINEL_MEM_WARN` / `SENTINEL_MEM_CRIT` | 80 / 90 | Memory thresholds (%) |
+| `SENTINEL_DISK_WARN` / `SENTINEL_DISK_CRIT` | 80 / 90 | Disk-used thresholds (%) |
+| `SENTINEL_MONITOR_INTERVAL` | 30 | Background check interval, seconds (≥ 5) |
+| `SENTINEL_SERVICE_TIMEOUT` | 5 | HTTP check timeout, seconds (> 0) |
+| `SENTINEL_ALLOW_LOOPBACK` | 1 | `1` permits 127.0.0.0/8 + ::1 targets (offline fixtures); `0` blocks loopback too |
+| `SENTINEL_ENABLE_MONITOR` | 1 | `0` disables the background loop (used by tests) |
+| `DATABASE_URL` | `sqlite:///./data/sentinel.db` | Database location |
 
-Errors are consistent JSON: `{"detail": "…"}` (validation failures return `{"error": "validation_error", "detail": […]}`).
+## API examples
+
+```bash
+# Health
+curl http://127.0.0.1:8000/api/health
+# {"status":"ok","app":"CloudOps Sentinel","version":"1.0.0","timestamp":"...","uptime_seconds":6.4,"database":"ok"}
+
+# Live reading (stored + evaluated for incidents)
+curl http://127.0.0.1:8000/api/metrics/current
+
+# Overall status
+curl http://127.0.0.1:8000/api/metrics/summary
+# {"status":"healthy","active_warning":0,"active_critical":0,"active_total":0,"latest":{...}}
+
+# Incidents (filter: ?status=open|acknowledged|resolved &severity=warning|critical)
+curl http://127.0.0.1:8000/api/incidents?status=open
+curl -X POST http://127.0.0.1:8000/api/incidents/1/acknowledge
+curl -X POST http://127.0.0.1:8000/api/incidents/1/resolve
+
+# Service targets (only stored, validated URLs are ever requested)
+curl -X POST http://127.0.0.1:8000/api/services \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"local-test-ok","url":"http://127.0.0.1:8000/api/test/ok"}'
+curl -X POST http://127.0.0.1:8000/api/services/1/check
+
+# Labelled demo: warning incident, then recovery
+curl -X POST http://127.0.0.1:8000/api/simulate \
+  -H 'Content-Type: application/json' -d '{"scenario":"cpu_warning"}'
+# {"scenario":"cpu_warning","snapshot_id":2,"incident_ids":[1]}
+curl -X POST http://127.0.0.1:8000/api/simulate \
+  -H 'Content-Type: application/json' -d '{"scenario":"clear"}'
+```
+
+Errors are consistent JSON (`{"detail": "…"}`); validation failures return 422, unknown IDs 404, illegal transitions 409, DB outages 500 with a generic message (details go to server logs, never to clients).
 
 ## Demo walkthrough
 
-1. **Normal health** — open the dashboard; badge shows HEALTHY, bars show live readings.
-2. **Warning threshold** — Dashboard → *Demo scenarios* → *CPU warning*, or `POST /api/simulate {"scenario":"cpu_warning"}`. A `warning` incident appears (tagged `simulated`).
-3. **Critical threshold** — run *CPU critical*. The existing warning escalates to one `critical` incident (no duplicate), badge turns CRITICAL.
-4. **Service failure** — add target `http://127.0.0.1:8000/api/test/fail`, press *Check now*: a `service_down` incident appears. (Point it at `/api/test/ok` and check again to see recovery.)
-5. **Recovery & history** — press *Clear / recover* (or `{"scenario":"clear"}`): simulated incidents resolve with timestamps; filter the incident list by *Resolved* to review history.
+1. **Normal health** — open the dashboard; HEALTHY badge, live bars, empty incident queue ("No incidents — system looks healthy").
+2. **Warning** — *Demo scenarios → CPU warning*: one `warning` incident tagged `simulated`; badge turns DEGRADED.
+3. **Critical + escalation** — *CPU critical*: the same incident escalates to `critical` (no duplicate); badge turns CRITICAL.
+4. **Service failure** — *+ failing fixture*, then *Check now*: a `service_down` incident appears. Switch the target to the healthy fixture and check again to watch recovery auto-resolve it.
+5. **Recovery & history** — *Clear / recover*: simulated incidents resolve with timestamps; filter by *Resolved* to review history.
+
+## Testing & CI
+
+```powershell
+pytest -q
+```
+
+94 deterministic tests: boundaries, dedup/escalation, ack/resolve conflicts, auto-recovery, empty-DB responses, invalid input, DB-failure handling, timeouts, a mocked-DNS SSRF matrix (private/IPv6/metadata/redirect chains), dashboard integration, and monitor-cycle persistence. No test touches GCP, the internet, internal infrastructure, or heavy resources.
+
+CI (`.github/workflows/ci.yml`): on push/PR runs the full suite on Python 3.12, builds the Docker image without pushing, and runs an informational (non-blocking) `pip-audit`.
+
+## Security design
+
+- Checks run only against explicitly configured targets; every request re-resolves and policy-checks the destination; redirects are walked manually (≤ 3) with re-validation; bodies capped; pools limited. Loopback is allowed by default purely for offline fixtures — set `SENTINEL_ALLOW_LOOPBACK=0` to block it.
+- No CORS, no debug/reload in production paths, localhost bind by default, generic 500s, secrets/DBs git-ignored.
+- Residual risks (DNS rebinding window, no auth/multi-tenancy, single-node) are documented in [docs/SECURITY.md](docs/SECURITY.md). This tool is **not** claimed production-hardened.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `pip install` fails on Windows | Upgrade pip: `python -m pip install --upgrade pip`; ensure Python 3.12+ from python.org |
-| Port 8000 in use | `uvicorn app.main:app --port 8001` |
-| Empty dashboard / unreachable badge | Backend not running — start uvicorn; check `http://127.0.0.1:8000/api/health` |
-| DB locked | Only one writer loop at a time; stop duplicate servers |
-| PowerShell activation blocked | Use `.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000` directly |
+| `pip install` fails | `python -m pip install --upgrade pip`; use Python 3.12+ from python.org |
+| Port 8000 in use | `uvicorn app.main:app --port 8001` (fixture quick-add adapts automatically) |
+| Dashboard shows UNREACHABLE | Start the backend; verify `/api/health` |
+| `ValueError` on startup about thresholds | Fix env so 0 < warn < crit ≤ 100 |
+| Adding a service fails | Host must resolve to an allowed address; private IPs are rejected by policy |
+| DB locked | Stop duplicate server instances |
 
-## Limitations
+## Project status
 
-- Single-node, local-only: no multi-host, alerting integrations, or auth (binds to localhost by default).
-- Thresholds are static (no anomaly detection); background interval minimum ~seconds.
-- History is trimmed (5000 snapshots / 2000 check results) to bound SQLite growth.
-- Simulated scenarios are fixtures, not real load — by design, to stay safe.
+- ✅ Implemented + tested: monitoring, incidents, guarded service checks, dashboard, Docker config, CI config
+- ✅ Verified locally: 94/94 tests, live server (health, dashboard, API, persistence, recovery)
+- ⏳ Verify after push: GitHub Actions run for the new commits
+- ❌ Not run: real `docker build` (Docker not installed on this machine)
 
-## Future improvements
+## Screenshots
 
-- User authentication + role-based incident assignment
-- Email/webhook notifications on critical incidents
-- Configurable per-service expected status codes and response-time SLOs
-- Metrics retention policies + CSV export
-- Optional Prometheus exposition endpoint
-
-## Task checklist
-
-- [x] Environment inspection
-- [x] Backend (health, metrics, incidents, services, simulation)
-- [x] Monitoring + incident engine (thresholds, dedup, recovery)
-- [x] Safe HTTP service checks (allowlist + validation + timeouts)
-- [x] Dashboard (live data, states, ack/resolve controls)
-- [x] Pytest suite (deterministic, mocked)
-- [x] Docker + Compose + CI workflow
-- [x] README + demo walkthrough
-- [ ] GitHub publication (requires `gh` auth — see final report)
+To be added: dashboard in healthy state and during a simulated critical incident (capture from a local run; no mockups).
 
 ## License
 

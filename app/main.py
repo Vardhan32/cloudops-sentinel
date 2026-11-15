@@ -7,7 +7,6 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -33,16 +32,14 @@ from .schemas import (
     SimulateIn,
 )
 from .services import check_service, validate_service_name, validate_service_url
+from .utils import get_logger, utcnow
 
-logger = logging.getLogger(__name__)
-
+logger = get_logger("app")
 START_TIME = time.time()
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+GENERIC_DB_ERROR = "Database temporarily unavailable. Please retry."
 
 
 def _monitor_enabled() -> bool:
@@ -93,7 +90,8 @@ def run_monitor_cycle() -> None:
                 )
         # Keep history bounded (retain latest 5000 snapshots / 2000 results).
         _trim_history(db)
-    except Exception:
+    except Exception as exc:
+        logger.error("Monitor cycle failed: %s", exc)
         db.rollback()
         logger.exception(
             "Background monitoring cycle failed; remaining checks in this cycle were skipped."
@@ -108,7 +106,10 @@ def _trim_history(db: Session) -> None:
         if count > keep:
             oldest_ids = [
                 r[0]
-                for r in db.query(model.id).order_by(model.id.asc()).limit(count - keep).all()
+                for r in db.query(model.id)
+                .order_by(model.id.asc())
+                .limit(count - keep)
+                .all()
             ]
             db.query(model).filter(model.id.in_(oldest_ids)).delete(
                 synchronize_session=False
@@ -124,18 +125,12 @@ async def _monitor_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
-    # Seed default service targets on first run.
-    from .database import SessionLocal
-
-    db = SessionLocal()
+    config.validate_config()
     try:
-        if db.query(ServiceTarget).count() == 0:
-            for svc in config.DEFAULT_SERVICES:
-                db.add(ServiceTarget(name=svc["name"], url=svc["url"]))
-            db.commit()
-    finally:
-        db.close()
+        init_db()
+    except Exception as exc:
+        logger.error("Database initialization failed: %s", exc)
+        raise
     task = None
     if _monitor_enabled():
         task = asyncio.create_task(_monitor_loop())
@@ -174,7 +169,7 @@ def api_health(db: Session = Depends(get_db)):
         status="ok",
         app=config.APP_NAME,
         version=config.APP_VERSION,
-        timestamp=_utcnow(),
+        timestamp=utcnow(),
         uptime_seconds=round(time.time() - START_TIME, 1),
         database=db_status,
     )
@@ -201,8 +196,20 @@ def metrics_current(db: Session = Depends(get_db)):
         db.commit()
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        logger.error("Failed to store metric snapshot: %s", exc)
+        raise HTTPException(status_code=500, detail=GENERIC_DB_ERROR)
     db.refresh(snapshot)
+    # Evaluate thresholds on the live reading so polling the dashboard
+    # surfaces genuine incidents without waiting for the background loop.
+    # Deduplication keeps this idempotent across polls.
+    try:
+        findings = monitor.evaluate_thresholds(
+            snapshot.cpu_percent, snapshot.memory_percent, snapshot.disk_percent
+        )
+        monitor.sync_incidents(db, findings, source="observed")
+    except Exception as exc:
+        db.rollback()
+        logger.error("Incident evaluation failed: %s", exc)
     return MetricSnapshotOut(
         id=snapshot.id,
         cpu_percent=snapshot.cpu_percent,
@@ -214,16 +221,15 @@ def metrics_current(db: Session = Depends(get_db)):
     )
 
 
-@app.get("/api/metrics/history", response_model=list[MetricSnapshotOut], tags=["metrics"])
+@app.get(
+    "/api/metrics/history", response_model=list[MetricSnapshotOut], tags=["metrics"]
+)
 def metrics_history(
     limit: int = Query(default=60, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     rows = (
-        db.query(MetricSnapshot)
-        .order_by(MetricSnapshot.id.desc())
-        .limit(limit)
-        .all()
+        db.query(MetricSnapshot).order_by(MetricSnapshot.id.desc()).limit(limit).all()
     )
     return [
         MetricSnapshotOut(
@@ -241,9 +247,7 @@ def metrics_history(
 
 @app.get("/api/metrics/summary", response_model=HealthSummary, tags=["metrics"])
 def metrics_summary(db: Session = Depends(get_db)):
-    latest_row = (
-        db.query(MetricSnapshot).order_by(MetricSnapshot.id.desc()).first()
-    )
+    latest_row = db.query(MetricSnapshot).order_by(MetricSnapshot.id.desc()).first()
     latest = None
     if latest_row is not None:
         latest = MetricReading(
@@ -256,15 +260,25 @@ def metrics_summary(db: Session = Depends(get_db)):
         )
     warn = (
         db.query(Incident)
-        .filter(Incident.status.in_(("open", "acknowledged")), Incident.severity == "warning")
+        .filter(
+            Incident.status.in_(("open", "acknowledged")),
+            Incident.severity == "warning",
+        )
         .count()
     )
     crit = (
         db.query(Incident)
-        .filter(Incident.status.in_(("open", "acknowledged")), Incident.severity == "critical")
+        .filter(
+            Incident.status.in_(("open", "acknowledged")),
+            Incident.severity == "critical",
+        )
         .count()
     )
-    status = "healthy" if crit == 0 and warn == 0 else ("critical" if crit > 0 else "degraded")
+    status = (
+        "healthy"
+        if crit == 0 and warn == 0
+        else ("critical" if crit > 0 else "degraded")
+    )
     return HealthSummary(
         status=status,
         active_warning=warn,
@@ -304,7 +318,11 @@ def get_incident(incident_id: int, db: Session = Depends(get_db)):
     return incident
 
 
-@app.post("/api/incidents/{incident_id}/acknowledge", response_model=IncidentOut, tags=["incidents"])
+@app.post(
+    "/api/incidents/{incident_id}/acknowledge",
+    response_model=IncidentOut,
+    tags=["incidents"],
+)
 def acknowledge(incident_id: int, db: Session = Depends(get_db)):
     incident = db.get(Incident, incident_id)
     if incident is None:
@@ -312,19 +330,30 @@ def acknowledge(incident_id: int, db: Session = Depends(get_db)):
     if incident.status != "open":
         raise HTTPException(
             status_code=409,
-            detail=f"Only open incidents can be acknowledged (current: {incident.status}).",
+            detail="Only open incidents can be acknowledged "
+            f"(current: {incident.status}).",
         )
-    return monitor.acknowledge_incident(db, incident_id)
+    updated = monitor.acknowledge_incident(db, incident)
+    if updated is None:  # status changed concurrently
+        raise HTTPException(status_code=409, detail="Incident is no longer open.")
+    return updated
 
 
-@app.post("/api/incidents/{incident_id}/resolve", response_model=IncidentOut, tags=["incidents"])
+@app.post(
+    "/api/incidents/{incident_id}/resolve",
+    response_model=IncidentOut,
+    tags=["incidents"],
+)
 def resolve(incident_id: int, db: Session = Depends(get_db)):
     incident = db.get(Incident, incident_id)
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found.")
     if incident.status == "resolved":
         raise HTTPException(status_code=409, detail="Incident is already resolved.")
-    return monitor.resolve_incident(db, incident_id)
+    updated = monitor.resolve_incident(db, incident)
+    if updated is None:  # status changed concurrently
+        raise HTTPException(status_code=409, detail="Incident is already resolved.")
+    return updated
 
 
 # ---------- Services ----------
@@ -350,7 +379,9 @@ def list_services(db: Session = Depends(get_db)):
     return out
 
 
-@app.post("/api/services", response_model=ServiceTargetOut, status_code=201, tags=["services"])
+@app.post(
+    "/api/services", response_model=ServiceTargetOut, status_code=201, tags=["services"]
+)
 def add_service(payload: ServiceTargetIn, db: Session = Depends(get_db)):
     try:
         name = validate_service_name(payload.name)
@@ -358,14 +389,17 @@ def add_service(payload: ServiceTargetIn, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     if db.query(ServiceTarget).filter(ServiceTarget.name == name).first():
-        raise HTTPException(status_code=409, detail="A service with this name already exists.")
+        raise HTTPException(
+            status_code=409, detail="A service with this name already exists."
+        )
     target = ServiceTarget(name=name, url=url)
     db.add(target)
     try:
         db.commit()
     except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        logger.error("Failed to store service target: %s", exc)
+        raise HTTPException(status_code=500, detail=GENERIC_DB_ERROR)
     db.refresh(target)
     return target
 
@@ -375,13 +409,24 @@ def delete_service(service_id: int, db: Session = Depends(get_db)):
     target = db.get(ServiceTarget, service_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Service not found.")
-    db.query(ServiceCheckResult).filter(ServiceCheckResult.service_id == service_id).delete()
+    db.query(ServiceCheckResult).filter(
+        ServiceCheckResult.service_id == service_id
+    ).delete()
     db.delete(target)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to delete service target: %s", exc)
+        raise HTTPException(status_code=500, detail=GENERIC_DB_ERROR)
     return None
 
 
-@app.post("/api/services/{service_id}/check", response_model=ServiceCheckOut, tags=["services"])
+@app.post(
+    "/api/services/{service_id}/check",
+    response_model=ServiceCheckOut,
+    tags=["services"],
+)
 def check_service_now(service_id: int, db: Session = Depends(get_db)):
     target = db.get(ServiceTarget, service_id)
     if target is None:
@@ -396,16 +441,35 @@ def check_service_now(service_id: int, db: Session = Depends(get_db)):
         error=result["error"],
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to store check result: %s", exc)
+        raise HTTPException(status_code=500, detail=GENERIC_DB_ERROR)
     if result["healthy"]:
         monitor.resolve_service_incident(db, target.name, source="observed")
     else:
-        monitor.record_service_incident(db, target.name, result["error"], source="observed")
+        monitor.record_service_incident(
+            db, target.name, result["error"], source="observed"
+        )
     db.refresh(row)
     return row
 
 
-@app.get("/api/services/history", response_model=list[ServiceCheckOut], tags=["services"])
+@app.get("/api/services/suggestions", tags=["services"])
+def service_suggestions():
+    """Offline fixture targets. The dashboard builds full URLs from the
+    page origin, so fixtures work on any port without configuration."""
+    return [
+        {"name": "local-test-ok", "path": "/api/test/ok"},
+        {"name": "local-test-fail", "path": "/api/test/fail"},
+    ]
+
+
+@app.get(
+    "/api/services/history", response_model=list[ServiceCheckOut], tags=["services"]
+)
 def service_history(
     service_id: int | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
@@ -427,7 +491,9 @@ def test_ok():
 
 @app.get("/api/test/fail", tags=["test-fixtures"])
 def test_fail():
-    return JSONResponse(status_code=503, content={"status": "fail", "message": "Simulated failure."})
+    return JSONResponse(
+        status_code=503, content={"status": "fail", "message": "Simulated failure."}
+    )
 
 
 # ---------- Demo simulation (explicitly labelled, never touches the host) ----------
@@ -435,8 +501,16 @@ def test_fail():
 SIMULATED_READINGS: dict[str, dict] = {
     "cpu_warning": {"cpu_percent": 82.0, "memory_percent": 45.0, "disk_percent": 40.0},
     "cpu_critical": {"cpu_percent": 96.0, "memory_percent": 50.0, "disk_percent": 40.0},
-    "memory_critical": {"cpu_percent": 30.0, "memory_percent": 94.0, "disk_percent": 40.0},
-    "disk_critical": {"cpu_percent": 30.0, "memory_percent": 45.0, "disk_percent": 95.0},
+    "memory_critical": {
+        "cpu_percent": 30.0,
+        "memory_percent": 94.0,
+        "disk_percent": 40.0,
+    },
+    "disk_critical": {
+        "cpu_percent": 30.0,
+        "memory_percent": 45.0,
+        "disk_percent": 95.0,
+    },
 }
 
 
@@ -447,7 +521,7 @@ def simulate(payload: SimulateIn, db: Session = Depends(get_db)):
     'clear' resolves all simulated incidents (recovery walkthrough).
     """
     if payload.scenario == "clear":
-        now = _utcnow()
+        now = utcnow()
         active = (
             db.query(Incident)
             .filter(
@@ -466,7 +540,10 @@ def simulate(payload: SimulateIn, db: Session = Depends(get_db)):
 
     if payload.scenario == "service_failure":
         incident = monitor.record_service_incident(
-            db, "demo-service", "Simulated connection failure (demo).", source="simulated"
+            db,
+            "demo-service",
+            "Simulated connection failure (demo).",
+            source="simulated",
         )
         return {"scenario": payload.scenario, "incident_id": incident.id}
 
