@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -32,6 +33,8 @@ from .schemas import (
     SimulateIn,
 )
 from .services import check_service, validate_service_name, validate_service_url
+
+logger = logging.getLogger(__name__)
 
 START_TIME = time.time()
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -92,6 +95,9 @@ def run_monitor_cycle() -> None:
         _trim_history(db)
     except Exception:
         db.rollback()
+        logger.exception(
+            "Background monitoring cycle failed; remaining checks in this cycle were skipped."
+        )
     finally:
         db.close()
 
